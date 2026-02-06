@@ -99,6 +99,10 @@ class MCPServer: ObservableObject {
                     case .ready:
                         self?.isRunning = true
                         print("MCP Server listening on port \(self?.port ?? 0)")
+
+                        // Start Cloudflare tunnel for remote access
+
+                        CloudflaredTunnel.shared.start(port: self?.port ?? 9999)
                     case .failed(let error):
                         print("MCP Server failed: \(error)")
                         self?.isRunning = false
@@ -122,6 +126,7 @@ class MCPServer: ObservableObject {
     }
     
     func stop() {
+        CloudflaredTunnel.shared.stop()
         listener?.cancel()
         listener = nil
         isRunning = false
@@ -199,7 +204,12 @@ class MCPServer: ObservableObject {
         // Route request
         switch (method, path) {
         case ("GET", "/health"):
-            sendJSONResponse(connection: connection, json: ["status": "ok", "server": "daisy-mcp"])
+            let tunnel = CloudflaredTunnel.shared
+            var healthResponse: [String: Any] = ["status": "ok", "server": "daisy-mcp"]
+            if let url = tunnel.tunnelURL {
+                healthResponse["tunnelURL"] = url
+            }
+            sendJSONResponse(connection: connection, json: healthResponse)
             
         case ("GET", "/tools"):
             sendJSONResponse(connection: connection, json: ["tools": getToolDefinitions()])
