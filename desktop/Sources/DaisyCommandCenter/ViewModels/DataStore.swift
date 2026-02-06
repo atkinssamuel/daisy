@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import FirebaseFirestore
 
 // -------------------------------------------------------------------------------------
 // ----------------------------------- DataStore ---------------------------------------
@@ -35,10 +36,147 @@ class DataStore: ObservableObject {
     @Published var showProjectSettings: Bool = false
 
     private let db = DatabaseManager.shared
+    private let firebase = FirebaseManager.shared
+
+    // Firestore listener for mobile-originated messages
+
+    private var mobileMessageListeners: [String: ListenerRegistration] = [:]
 
     private init() {
         loadProjects()
         loadAppState()
+    }
+
+    // -------------------------------------------------------------------------------------
+    // ------------------------------- Firestore Sync Helpers ------------------------------
+    // -------------------------------------------------------------------------------------
+
+    private func syncProjectToFirestore(_ project: DBProject) {
+        Task {
+            let data: [String: Any] = [
+                "id": project.id,
+                "name": project.name,
+                "description": project.description,
+                "localPath": project.localPath,
+                "order": project.order,
+                "createdAt": Timestamp(date: project.createdAt)
+            ]
+            try? await firebase.createProject(data)
+        }
+    }
+
+    private func syncAgentToFirestore(_ agent: DBAgent) {
+        guard let projectId = currentProjectId else { return }
+        Task {
+            let data: [String: Any] = [
+                "id": agent.id,
+                "projectId": agent.projectId,
+                "title": agent.title,
+                "description": agent.description,
+                "isDefault": agent.isDefault,
+                "isFinished": agent.isFinished,
+                "status": agent.status,
+                "createdAt": Timestamp(date: agent.createdAt)
+            ]
+            try? await firebase.createAgent(data, projectId: projectId)
+        }
+    }
+
+    private func syncMessageToFirestore(_ message: DBMessage) {
+        Task {
+            let data: [String: Any] = [
+                "id": message.id,
+                "agentId": message.taskId,
+                "role": message.role,
+                "text": message.text,
+                "timestamp": Timestamp(date: message.timestamp),
+                "persona": message.persona,
+                "source": "desktop"
+            ]
+            try? await firebase.addMessage(data, agentId: message.taskId)
+        }
+    }
+
+    private func syncArtifactToFirestore(_ artifact: DBArtifact) {
+        Task {
+            var data: [String: Any] = [
+                "id": artifact.id,
+                "agentId": artifact.taskId,
+                "type": artifact.type,
+                "label": artifact.label,
+                "content": artifact.file,
+                "order": artifact.order
+            ]
+            if let path = artifact.path { data["path"] = path }
+            if let lang = artifact.language { data["language"] = lang }
+            if let caption = artifact.caption { data["caption"] = caption }
+            try? await firebase.addArtifact(data, agentId: artifact.taskId)
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // ----------------------------- Mobile Message Listener -------------------------------
+    // -------------------------------------------------------------------------------------
+
+    func startMobileMessageListeners() {
+        for agent in agents {
+            listenForMobileMessages(agentId: agent.id)
+        }
+    }
+
+    func stopMobileMessageListeners() {
+        for (_, listener) in mobileMessageListeners {
+            listener.remove()
+        }
+        mobileMessageListeners.removeAll()
+    }
+
+    private func listenForMobileMessages(agentId: String) {
+        mobileMessageListeners[agentId]?.remove()
+
+        guard let collection = firebase.messagesCollection(agentId: agentId) else { return }
+
+        mobileMessageListeners[agentId] = collection
+            .whereField("source", isEqualTo: "mobile")
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self = self else { return }
+                guard let changes = snapshot?.documentChanges else { return }
+
+                for change in changes where change.type == .added {
+                    let d = change.document.data()
+                    let text = d["text"] as? String ?? ""
+                    let messageId = d["id"] as? String ?? change.document.documentID
+
+                    // Check if we already have this message locally
+
+                    let existing = self.agentMessages[agentId]?.contains { $0.id == messageId } ?? false
+                    if existing { continue }
+
+                    Task { @MainActor in
+
+                        // Add to local DB
+
+                        self.addMessage(role: "user", text: text, persona: "agent", toAgentId: agentId)
+
+                        // Send to the Claude Code tmux session
+
+                        guard let projectId = self.currentProjectId,
+                              let agent = self.agents.first(where: { $0.id == agentId }) else { return }
+
+                        let sessionId: String
+                        if agent.isDefault {
+                            sessionId = ClaudeCodeManager.agentSessionId(projectId: projectId)
+                        } else {
+                            sessionId = ClaudeCodeManager.agentSessionId(projectId: projectId, agentId: agentId)
+                        }
+
+                        if let session = ClaudeCodeManager.shared.sessions[sessionId], session.isRunning {
+                            session.sendLine(text)
+                            MCPServer.shared.setTyping(sessionId: sessionId, typing: true)
+                        }
+                    }
+                }
+            }
     }
 
     // Messages for the current agent's conversation (from cache)
@@ -88,18 +226,21 @@ class DataStore: ObservableObject {
     func createProject(name: String) -> DBProject {
         let project = DBProject(name: name, order: projects.count)
         do {
+            var defaultAgent = DBTask(projectId: project.id, title: "General", isProjectManager: true)
+            defaultAgent.status = "running"
+
             try db.write { db in
                 try project.insert(db)
-
-                // Create the default agent for this project
-
-                var defaultAgent = DBTask(projectId: project.id, title: "General", isProjectManager: true)
-                defaultAgent.status = "running"
                 try defaultAgent.insert(db)
             }
 
             loadProjects()
             selectProject(project.id)
+
+            // Sync to Firestore
+
+            syncProjectToFirestore(project)
+            syncAgentToFirestore(defaultAgent)
 
             // Auto-start session after UI settles
 
@@ -123,6 +264,8 @@ class DataStore: ObservableObject {
                 currentProjectId = projects.first?.id
                 loadAgents()
             }
+
+            Task { try? await firebase.deleteProject(projectId) }
         } catch {
             print("Failed to delete project: \(error)")
         }
@@ -137,6 +280,8 @@ class DataStore: ObservableObject {
                 }
             }
             loadProjects()
+
+            Task { try? await firebase.updateProject(projectId, data: ["name": name]) }
         } catch {
             print("Failed to rename project: \(error)")
         }
@@ -216,6 +361,10 @@ class DataStore: ObservableObject {
             }
             loadAllAgentArtifacts()
             loadAllAgentMessages()
+
+            // Listen for messages from mobile
+
+            startMobileMessageListeners()
         } catch {
             print("Failed to load agents: \(error)")
         }
@@ -250,6 +399,7 @@ class DataStore: ObservableObject {
             }
             loadAgents()
             selectAgent(agent.id)
+            syncAgentToFirestore(agent)
 
             // Start a Claude session for this agent
 
@@ -281,6 +431,8 @@ class DataStore: ObservableObject {
             return
         }
 
+        let projectId = agent.projectId
+
         // Stop the agent's session
 
         stopAgentSession(agentId: agentId)
@@ -293,6 +445,8 @@ class DataStore: ObservableObject {
             if currentAgentId == agentId {
                 currentAgentId = sortedAgents.first?.id
             }
+
+            Task { try? await firebase.deleteAgent(agentId, projectId: projectId) }
         } catch {
             print("Failed to delete agent: \(error)")
         }
@@ -572,6 +726,7 @@ class DataStore: ObservableObject {
                 agentMessages[agentId] = []
             }
             agentMessages[agentId]?.append(message)
+            syncMessageToFirestore(message)
         } catch {
             print("Failed to add message: \(error)")
         }
@@ -644,6 +799,7 @@ class DataStore: ObservableObject {
                 try artifact.insert(db)
             }
             loadAllAgentArtifacts()
+            syncArtifactToFirestore(artifact)
             return artifact.id
         } catch {
             print("Failed to add artifact: \(error)")

@@ -1,7 +1,8 @@
 import Foundation
 import Combine
+import FirebaseFirestore
 
-// MARK: - App-Wide Data Store
+// MARK: - App-Wide Data Store (Firestore-backed)
 
 @MainActor
 class DataStore: ObservableObject {
@@ -16,123 +17,156 @@ class DataStore: ObservableObject {
     // MARK: - Connection
 
     @Published var isConnected: Bool = false
-    @Published var isLoading: Bool = false
 
-    // MARK: - Polling
+    // MARK: - Listeners
 
-    private var pollTimer: Timer?
-    private let api = APIClient.shared
+    private var projectsListener: ListenerRegistration?
+    private var agentListeners: [String: ListenerRegistration] = [:]
+    private var messageListeners: [String: ListenerRegistration] = [:]
+
+    private let firebase = FirebaseManager.shared
 
     private init() {}
 
-    // MARK: - Connection
+    // MARK: - Start/Stop Listening
 
-    func checkConnection() async {
-        let connected = await api.healthCheck()
-        isConnected = connected
-    }
+    func startListening() {
+        stopListening()
 
-    // MARK: - Polling Lifecycle
+        guard let collection = firebase.projectsCollection() else { return }
 
-    func startPolling() {
-        stopPolling()
+        projectsListener = collection
+            .order(by: "order")
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self = self, let docs = snapshot?.documents else { return }
 
-        pollTimer = Timer.scheduledTimer(withTimeInterval: AppConfig.pollingInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.pollStatus()
+                Task { @MainActor in
+                    self.projects = docs.compactMap { doc in
+                        let d = doc.data()
+                        return Project(
+                            id: doc.documentID,
+                            name: d["name"] as? String ?? "",
+                            description: d["description"] as? String ?? "",
+                            localPath: d["localPath"] as? String ?? "",
+                            order: d["order"] as? Int ?? 0,
+                            createdAt: (d["createdAt"] as? Timestamp)?.dateValue() ?? Date()
+                        )
+                    }
+                    self.isConnected = true
+
+                    // Start listening to agents for each project
+
+                    for project in self.projects {
+                        self.listenToAgents(projectId: project.id)
+                    }
+                }
             }
-        }
-
-        // Immediate first poll
-
-        Task {
-            await pollStatus()
-        }
     }
 
-    func stopPolling() {
-        pollTimer?.invalidate()
-        pollTimer = nil
+    func stopListening() {
+        projectsListener?.remove()
+        projectsListener = nil
+
+        for (_, listener) in agentListeners {
+            listener.remove()
+        }
+        agentListeners.removeAll()
+
+        for (_, listener) in messageListeners {
+            listener.remove()
+        }
+        messageListeners.removeAll()
     }
 
-    // MARK: - Fetch Projects
+    // MARK: - Agent Listeners
 
-    func fetchProjects() async {
-        do {
-            projects = try await api.getProjects()
-        } catch {
-            print("✗ Failed to fetch projects: \(error)")
-        }
+    private func listenToAgents(projectId: String) {
+        agentListeners[projectId]?.remove()
+
+        guard let collection = firebase.agentsCollection(projectId: projectId) else { return }
+
+        agentListeners[projectId] = collection
+            .order(by: "createdAt")
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self = self, let docs = snapshot?.documents else { return }
+
+                Task { @MainActor in
+                    self.agents[projectId] = docs.compactMap { doc in
+                        let d = doc.data()
+                        return Agent(
+                            id: doc.documentID,
+                            projectId: projectId,
+                            title: d["title"] as? String ?? "",
+                            description: d["description"] as? String ?? "",
+                            isDefault: d["isDefault"] as? Bool ?? false,
+                            isFinished: d["isFinished"] as? Bool ?? false,
+                            status: d["status"] as? String ?? "inactive",
+                            createdAt: (d["createdAt"] as? Timestamp)?.dateValue() ?? Date()
+                        )
+                    }
+                }
+            }
     }
 
-    // MARK: - Fetch Agents
+    // MARK: - Message Listeners
 
-    func fetchAgents(projectId: String) async {
-        do {
-            let fetched = try await api.getAgents(projectId: projectId)
-            agents[projectId] = fetched
-        } catch {
-            print("✗ Failed to fetch agents: \(error)")
-        }
+    func listenToMessages(agentId: String) {
+        messageListeners[agentId]?.remove()
+
+        guard let collection = firebase.messagesCollection(agentId: agentId) else { return }
+
+        messageListeners[agentId] = collection
+            .order(by: "timestamp")
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self = self, let docs = snapshot?.documents else { return }
+
+                Task { @MainActor in
+                    self.messages[agentId] = docs.compactMap { doc in
+                        let d = doc.data()
+                        return Message(
+                            id: doc.documentID,
+                            agentId: d["agentId"] as? String ?? agentId,
+                            role: d["role"] as? String ?? "user",
+                            text: d["text"] as? String ?? "",
+                            timestamp: (d["timestamp"] as? Timestamp)?.dateValue() ?? Date(),
+                            persona: d["persona"] as? String ?? "agent"
+                        )
+                    }
+                }
+            }
     }
 
-    // MARK: - Fetch Messages
-
-    func fetchMessages(agentId: String) async {
-        do {
-            let fetched = try await api.getMessages(agentId: agentId)
-            messages[agentId] = fetched
-        } catch {
-            print("✗ Failed to fetch messages: \(error)")
-        }
+    func stopListeningToMessages(agentId: String) {
+        messageListeners[agentId]?.remove()
+        messageListeners.removeValue(forKey: agentId)
     }
 
     // MARK: - Send Message
 
     func sendMessage(agentId: String, projectId: String, text: String) async {
+
         // Optimistic local insert
 
         let localMsg = Message(agentId: agentId, role: "user", text: text)
         if messages[agentId] == nil { messages[agentId] = [] }
         messages[agentId]?.append(localMsg)
 
+        // Write to Firestore (desktop will pick it up via listener)
+
+        let data: [String: Any] = [
+            "id": localMsg.id,
+            "agentId": agentId,
+            "role": "user",
+            "text": text,
+            "timestamp": FieldValue.serverTimestamp(),
+            "persona": "agent",
+            "source": "mobile"
+        ]
+
         do {
-            try await api.sendMessage(agentId: agentId, projectId: projectId, text: text)
+            try await firebase.addMessage(data, agentId: agentId)
         } catch {
-            print("✗ Failed to send message: \(error)")
-        }
-    }
-
-    // MARK: - Poll Status
-
-    func pollStatus() async {
-        do {
-            let status = try await api.getStatus()
-            isConnected = true
-
-            // Update projects from status
-
-            for projectStatus in status.projects {
-                if let idx = projects.firstIndex(where: { $0.id == projectStatus.id }) {
-                    projects[idx].agentCount = projectStatus.agents.count
-                    projects[idx].activeAgentCount = projectStatus.agents.filter { $0.isThinking }.count
-                }
-
-                // Update agent live status
-
-                if var agentList = agents[projectStatus.id] {
-                    for agentStatus in projectStatus.agents {
-                        if let agentIdx = agentList.firstIndex(where: { $0.id == agentStatus.id }) {
-                            agentList[agentIdx].isThinking = agentStatus.isThinking
-                            agentList[agentIdx].focus = agentStatus.focus
-                            agentList[agentIdx].sessionRunning = agentStatus.sessionRunning
-                        }
-                    }
-                    agents[projectStatus.id] = agentList
-                }
-            }
-        } catch {
-            isConnected = false
+            print("Failed to send message: \(error)")
         }
     }
 

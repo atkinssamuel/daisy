@@ -6,6 +6,10 @@ import AppKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
 
+        // Initialize Firebase (triggers FirebaseManager.shared)
+
+        _ = FirebaseManager.shared
+
         // Set as regular app so it can receive keyboard focus
 
         NSApp.setActivationPolicy(.regular)

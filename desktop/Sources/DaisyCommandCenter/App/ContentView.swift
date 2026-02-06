@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject private var store: DataStore
+    @ObservedObject private var firebase = FirebaseManager.shared
 
     init() {
         _store = ObservedObject(wrappedValue: DataStore.shared)
@@ -13,34 +14,42 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            HStack(spacing: 0) {
-
-                // Left: Projects sidebar
-
-                ProjectsSidebar()
-                    .frame(width: 180)
-                    .background(Color(white: 0.08))
-
-                Divider().background(Color(white: 0.2))
-
-                // Middle: Agents list
-
-                AgentsList()
-                    .frame(width: 240)
-                    .background(Color(white: 0.06))
-
-                Divider().background(Color(white: 0.2))
-
-                // Right: Agent detail / Chat
-
-                AgentDetail()
-                    .frame(maxWidth: .infinity)
-                    .background(Color(white: 0.04))
+            if firebase.isSignedIn {
+                mainContent
+            } else {
+                AuthView()
             }
         }
-        .environmentObject(store)
         .frame(minWidth: 1000, minHeight: 600)
         .transaction { $0.animation = nil }
+    }
+
+    private var mainContent: some View {
+        HStack(spacing: 0) {
+
+            // Left: Projects sidebar
+
+            ProjectsSidebar()
+                .frame(width: 180)
+                .background(Color(white: 0.08))
+
+            Divider().background(Color(white: 0.2))
+
+            // Middle: Agents list
+
+            AgentsList()
+                .frame(width: 240)
+                .background(Color(white: 0.06))
+
+            Divider().background(Color(white: 0.2))
+
+            // Right: Agent detail / Chat
+
+            AgentDetail()
+                .frame(maxWidth: .infinity)
+                .background(Color(white: 0.04))
+        }
+        .environmentObject(store)
         .onAppear {}
         .sheet(isPresented: $store.showProjectSettings) {
             ProjectSettingsSheet()

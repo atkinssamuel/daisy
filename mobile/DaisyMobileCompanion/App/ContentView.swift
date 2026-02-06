@@ -2,9 +2,17 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var store: DataStore
-    @StateObject private var discovery = BonjourDiscovery.shared
+    @EnvironmentObject var firebase: FirebaseManager
 
     var body: some View {
+        if firebase.isSignedIn {
+            mainContent
+        } else {
+            AuthView()
+        }
+    }
+
+    private var mainContent: some View {
         TabView {
             NavigationStack {
                 ProjectsList()
@@ -21,21 +29,10 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            discovery.startSearching()
-
-            Task {
-                // Wait briefly for Bonjour discovery
-
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-
-                if let host = discovery.discoveredHost, !store.isConnected {
-                    AppConfig.serverAddress = host
-                }
-
-                await store.checkConnection()
-                await store.fetchProjects()
-                store.startPolling()
-            }
+            store.startListening()
+        }
+        .onDisappear {
+            store.stopListening()
         }
     }
 }

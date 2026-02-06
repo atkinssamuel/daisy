@@ -34,12 +34,6 @@ struct AgentsList: View {
         .navigationDestination(for: String.self) { agentId in
             ChatScreen(agentId: agentId, projectId: projectId)
         }
-        .refreshable {
-            await store.fetchAgents(projectId: projectId)
-        }
-        .task {
-            await store.fetchAgents(projectId: projectId)
-        }
     }
 }
 
@@ -50,7 +44,6 @@ struct AgentCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-
             HStack(spacing: 8) {
                 Image(systemName: agent.isDefault ? "sparkles" : "person.fill")
                     .font(.system(size: 16))
@@ -61,40 +54,11 @@ struct AgentCard: View {
                     .font(.headline)
 
                 Spacer()
-
-                // Session status
-
-                Circle()
-                    .fill(agent.sessionRunning == true ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
             }
 
-            // Focus or status
-
-            if agent.isThinking == true {
-                HStack(spacing: 6) {
-                    ThinkingDots()
-                    if let focus = agent.focus, !focus.isEmpty {
-                        Text(focus)
-                            .font(.caption)
-                            .foregroundColor(.purple)
-                            .lineLimit(1)
-                    } else {
-                        Text("Thinking...")
-                            .font(.caption)
-                            .foregroundColor(.purple)
-                    }
-                }
-            } else if let focus = agent.focus, !focus.isEmpty {
-                Text(focus)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            } else {
-                Text(agent.sessionRunning == true ? "Idle" : "Stopped")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+            Text(agent.status)
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
         .padding(.vertical, 4)
     }
