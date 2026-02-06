@@ -1,6 +1,6 @@
 import Foundation
 
-// Agent model — maps to desktop DBTask/DBAgent
+// MARK: - Agent
 
 struct Agent: Identifiable, Codable, Equatable {
     let id: String
@@ -38,7 +38,3 @@ struct Agent: Identifiable, Codable, Equatable {
         self.createdAt = createdAt
     }
 }
-
-// Keep old type alias for compatibility
-
-typealias ProjectTask = Agent

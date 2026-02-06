@@ -88,7 +88,11 @@ class MCPServer: ObservableObject {
             parameters.allowLocalEndpointReuse = true
             
             listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
-            
+
+            // Advertise via Bonjour so mobile companion can auto-discover
+
+            listener?.service = NWListener.Service(name: "Daisy Command Center", type: "_daisy._tcp.")
+
             listener?.stateUpdateHandler = { [weak self] state in
                 DispatchQueue.main.async {
                     switch state {
