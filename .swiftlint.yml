@@ -1,0 +1,27 @@
+disabled_rules:
+  - trailing_whitespace
+  - line_length
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - force_unwrapping
+  - implicit_return
+  - modifier_order
+
+excluded:
+  - .build
+  - DerivedData
+
+identifier_name:
+  min_length: 2
+  excluded:
+    - id
+    - db
+    - t
+
+type_name:
+  min_length: 3
+
+nesting:
+  type_level: 2
