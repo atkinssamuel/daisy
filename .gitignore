@@ -9,6 +9,7 @@ DerivedData/
 *.dSYM
 *.xcuserstate
 build/
+*.xcarchive
 
 # Swift Package Manager
 .swiftpm/
@@ -29,3 +30,18 @@ Package.resolved
 # Environment
 .env
 *.xcconfig
+
+# Fastlane
+mobile/fastlane/report.xml
+mobile/fastlane/Preview.html
+mobile/fastlane/screenshots/
+mobile/fastlane/test_output/
+mobile/fastlane/README.md
+
+# Ruby / Bundler
+mobile/vendor/
+mobile/.bundle/
+mobile/Gemfile.lock
+
+# XcodeGen output (regenerated in CI)
+mobile/DaisyMobileCompanion.xcodeproj/

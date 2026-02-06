@@ -41,9 +41,7 @@ struct ContentView: View {
         .environmentObject(store)
         .frame(minWidth: 1000, minHeight: 600)
         .transaction { $0.animation = nil }
-        .onAppear {
-            store.migrateFromJSON()
-        }
+        .onAppear {}
         .sheet(isPresented: $store.showProjectSettings) {
             ProjectSettingsSheet()
                 .environmentObject(store)

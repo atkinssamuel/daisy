@@ -1,0 +1,123 @@
+# -------------------------------------------------------------------------------------
+# ---------------------------------------- CI -----------------------------------------
+# -------------------------------------------------------------------------------------
+#
+# Runs on every push to main and on all pull requests.
+# Jobs: lint, build+test for desktop (macOS) and mobile (iOS).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
+  XCODEGEN_VERSION: "2.42.0"
+
+jobs:
+
+  # -----------------------------------------------------------------------------------
+  # ----------------------------------- SwiftLint -------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  lint:
+    name: SwiftLint
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Lint desktop
+        run: |
+          cd desktop
+          swiftlint lint --strict --config ../.swiftlint.yml
+
+      - name: Lint mobile
+        run: |
+          cd mobile
+          swiftlint lint --strict --config ../.swiftlint.yml
+
+  # -----------------------------------------------------------------------------------
+  # ----------------------------------- Desktop ---------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  desktop-build:
+    name: Desktop — Build & Test
+    runs-on: macos-15
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: desktop/.build
+          key: desktop-spm-${{ hashFiles('desktop/Package.swift') }}
+          restore-keys: desktop-spm-
+
+      - name: Build
+        run: |
+          cd desktop
+          swift build -c release
+
+      - name: Test
+        run: |
+          cd desktop
+          swift test
+
+  # -----------------------------------------------------------------------------------
+  # ------------------------------------ Mobile ---------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  mobile-build:
+    name: Mobile — Build & Test
+    runs-on: macos-15
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          cd mobile
+          xcodegen generate
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: mobile-spm-${{ hashFiles('mobile/Package.swift') }}
+          restore-keys: mobile-spm-
+
+      - name: Build for iOS Simulator
+        run: |
+          cd mobile
+          xcodebuild build \
+            -project DaisyMobileCompanion.xcodeproj \
+            -scheme DaisyMobileCompanion \
+            -destination "platform=iOS Simulator,name=iPhone 16,OS=latest" \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+      - name: Run tests
+        run: |
+          cd mobile
+          xcodebuild test \
+            -project DaisyMobileCompanion.xcodeproj \
+            -scheme DaisyMobileCompanionTests \
+            -destination "platform=iOS Simulator,name=iPhone 16,OS=latest" \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty

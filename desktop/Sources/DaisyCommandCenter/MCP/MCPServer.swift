@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import GRDB
 
 // MARK: - UI Message (from Claude to UI)
 struct UIMessage: Identifiable, Equatable {
@@ -214,6 +215,20 @@ class MCPServer: ObservableObject {
                 sendErrorResponse(connection: connection, statusCode: 400, message: "Missing body")
             }
             
+        // -------------------------------------------------------------------------------------
+        // --------------------------------- REST API (Mobile) --------------------------------
+        // -------------------------------------------------------------------------------------
+
+        case ("GET", _) where path.hasPrefix("/api/"):
+            handleRESTGet(path: path, connection: connection)
+
+        case ("POST", _) where path.hasPrefix("/api/"):
+            if let body = body, let bodyData = body.data(using: .utf8) {
+                handleRESTPost(path: path, bodyData: bodyData, connection: connection)
+            } else {
+                sendErrorResponse(connection: connection, statusCode: 400, message: "Missing body")
+            }
+
         default:
             sendErrorResponse(connection: connection, statusCode: 404, message: "Not found")
         }
@@ -488,38 +503,27 @@ class MCPServer: ObservableObject {
         return store.agents.first { $0.projectId == projectId && $0.isDefault }?.id
     }
 
-    // Validate that a task belongs to the given project (must be called from main actor)
+    // Validate that an agent belongs to the given project
+
     @MainActor
-    private func validateTaskOwnership(taskId: String, projectId: String, store: DataStore) -> String? {
-        guard let task = store.tasks.first(where: { $0.id == taskId }) else {
-            return "Task not found"
+    private func validateAgentOwnership(agentId: String, projectId: String, store: DataStore) -> String? {
+        guard let agent = store.agents.first(where: { $0.id == agentId }) else {
+            return "Agent not found"
         }
-        if task.projectId != projectId {
-            return "Access denied: Task belongs to a different project"
+        if agent.projectId != projectId {
+            return "Access denied: Agent belongs to a different project"
         }
         return nil
     }
 
-    // Validate that a criterion belongs to a task in the given project (must be called from main actor)
-    @MainActor
-    private func validateCriterionOwnership(criterionId: String, projectId: String, store: DataStore) -> String? {
-        guard let criterion = store.getCriterion(criterionId) else {
-            return "Criterion not found"
-        }
-        return validateTaskOwnership(taskId: criterion.taskId, projectId: projectId, store: store)
-    }
+    // Validate that an artifact belongs to an agent in the given project
 
-    // Validate that an artifact belongs to a task in the given project (must be called from main actor)
     @MainActor
     private func validateArtifactOwnership(artifactId: String, projectId: String, store: DataStore) -> String? {
         guard let artifact = store.getArtifact(artifactId) else {
             return "Artifact not found"
         }
-        let taskId = artifact.taskId
-        if taskId.isEmpty {
-            return "Artifact has no associated task"
-        }
-        return validateTaskOwnership(taskId: taskId, projectId: projectId, store: store)
+        return validateAgentOwnership(agentId: artifact.taskId, projectId: projectId, store: store)
     }
 
     private func executeTool(name: String, params: [String: Any]) -> [String: Any] {
@@ -584,7 +588,7 @@ class MCPServer: ObservableObject {
                         // Default agent: agent-{projectId}
 
                         let projectId = remainder
-                        targetAgentId = store.projectManagerTaskId(forProjectId: projectId)
+                        targetAgentId = store.agents.first { $0.projectId == projectId && $0.isDefault }?.id
                     }
                 } else {
                     targetAgentId = store.currentAgentId
@@ -723,7 +727,10 @@ class MCPServer: ObservableObject {
                 } else {
                     return ["error": "No agent selected"]
                 }
-                let formatted = store.listTaskArtifactsFormatted(agentId)
+                let agentArtifactList = store.agentArtifacts[agentId] ?? []
+                let formatted = agentArtifactList.isEmpty
+                    ? "No artifacts for task \(agentId)"
+                    : agentArtifactList.map { "- **\($0.label)** [id: \($0.id)] (type: \($0.type))" }.joined(separator: "\n")
                 return ["success": true, "artifacts": formatted]
 
             case "delete_artifact":
@@ -887,6 +894,232 @@ class MCPServer: ObservableObject {
         ]
         sendJSONResponse(connection: connection, json: response)
     }
+    // -------------------------------------------------------------------------------------
+    // --------------------------------- REST API Handlers --------------------------------
+    // -------------------------------------------------------------------------------------
+
+    // MARK: - REST GET Handler
+
+    private func handleRESTGet(path: String, connection: NWConnection) {
+        let result: [String: Any] = DispatchQueue.main.sync {
+            let store = DataStore.shared
+            let db = DatabaseManager.shared
+            let formatter = ISO8601DateFormatter()
+
+            // GET /api/projects
+
+            if path == "/api/projects" {
+                let projects: [[String: Any]] = store.projects.map { p in
+                    let agents = (try? db.read { db in
+                        try DBTask.filter(Column("projectId") == p.id).fetchAll(db)
+                    }) ?? []
+                    let agentCount = agents.count
+                    let thinkingCount = agents.filter { agent in
+                        let sessionId = agent.isDefault
+                            ? ClaudeCodeManager.agentSessionId(projectId: p.id)
+                            : ClaudeCodeManager.agentSessionId(projectId: p.id, agentId: agent.id)
+                        return self.typingIndicators[sessionId] == true
+                    }.count
+
+                    return [
+                        "id": p.id,
+                        "name": p.name,
+                        "description": p.description,
+                        "localPath": p.localPath,
+                        "order": p.order,
+                        "createdAt": formatter.string(from: p.createdAt),
+                        "agentCount": agentCount,
+                        "activeAgentCount": thinkingCount
+                    ] as [String: Any]
+                }
+                return ["projects": projects]
+            }
+
+            // GET /api/projects/{id}/agents
+
+            if path.hasPrefix("/api/projects/") && path.hasSuffix("/agents") {
+                let projectId = String(path.dropFirst("/api/projects/".count).dropLast("/agents".count))
+                let agents: [DBTask] = (try? db.read { db in
+                    try DBTask.filter(Column("projectId") == projectId).fetchAll(db)
+                }) ?? []
+
+                let sorted = agents.sorted { a, b in
+                    if a.isDefault { return true }
+                    if b.isDefault { return false }
+                    return a.createdAt < b.createdAt
+                }
+
+                let result: [[String: Any]] = sorted.map { a in
+                    let sessionId = a.isDefault
+                        ? ClaudeCodeManager.agentSessionId(projectId: projectId)
+                        : ClaudeCodeManager.agentSessionId(projectId: projectId, agentId: a.id)
+                    let isThinking = self.typingIndicators[sessionId] == true
+                    let focus = self.focusStrings[sessionId]
+                    let sessionRunning = ClaudeCodeManager.shared.sessions[sessionId]?.isRunning == true
+
+                    return [
+                        "id": a.id,
+                        "projectId": a.projectId,
+                        "title": a.title,
+                        "description": a.description,
+                        "isDefault": a.isDefault,
+                        "isFinished": a.isFinished,
+                        "status": a.status,
+                        "createdAt": formatter.string(from: a.createdAt),
+                        "isThinking": isThinking,
+                        "focus": focus ?? "",
+                        "sessionRunning": sessionRunning
+                    ] as [String: Any]
+                }
+                return ["agents": result]
+            }
+
+            // GET /api/agents/{id}/messages?limit=50
+
+            if path.hasPrefix("/api/agents/") && path.contains("/messages") {
+                let pathPart = path.components(separatedBy: "?").first ?? path
+                let agentId = String(pathPart.dropFirst("/api/agents/".count).dropLast("/messages".count))
+
+                // Parse limit from query string
+
+                var limit = 50
+                if let queryStart = path.range(of: "?") {
+                    let query = String(path[queryStart.upperBound...])
+                    for param in query.split(separator: "&") {
+                        let kv = param.split(separator: "=", maxSplits: 1)
+                        if kv.count == 2 && kv[0] == "limit" {
+                            limit = Int(kv[1]) ?? 50
+                        }
+                    }
+                }
+
+                let messages: [DBMessage] = (try? db.read { db in
+                    try DBMessage
+                        .filter(Column("taskId") == agentId)
+                        .order(Column("timestamp").asc)
+                        .limit(limit)
+                        .fetchAll(db)
+                }) ?? []
+
+                let result: [[String: Any]] = messages.map { m in
+                    [
+                        "id": m.id,
+                        "agentId": m.taskId,
+                        "role": m.role,
+                        "text": m.text,
+                        "timestamp": formatter.string(from: m.timestamp),
+                        "persona": m.persona
+                    ] as [String: Any]
+                }
+                return ["messages": result]
+            }
+
+            // GET /api/status
+
+            if path == "/api/status" {
+                let projects: [[String: Any]] = store.projects.map { p in
+                    let agents: [DBTask] = (try? db.read { db in
+                        try DBTask.filter(Column("projectId") == p.id).fetchAll(db)
+                    }) ?? []
+
+                    let agentStatuses: [[String: Any]] = agents.map { a in
+                        let sessionId = a.isDefault
+                            ? ClaudeCodeManager.agentSessionId(projectId: p.id)
+                            : ClaudeCodeManager.agentSessionId(projectId: p.id, agentId: a.id)
+
+                        return [
+                            "id": a.id,
+                            "title": a.title,
+                            "isDefault": a.isDefault,
+                            "isThinking": self.typingIndicators[sessionId] == true,
+                            "focus": self.focusStrings[sessionId] ?? "",
+                            "sessionRunning": ClaudeCodeManager.shared.sessions[sessionId]?.isRunning == true
+                        ] as [String: Any]
+                    }
+
+                    return [
+                        "id": p.id,
+                        "name": p.name,
+                        "agents": agentStatuses
+                    ] as [String: Any]
+                }
+
+                return [
+                    "projects": projects,
+                    "timestamp": formatter.string(from: Date())
+                ]
+            }
+
+            return ["error": "Not found"]
+        }
+
+        if result["error"] != nil {
+            sendErrorResponse(connection: connection, statusCode: 404, message: result["error"] as? String ?? "Not found")
+        } else {
+            sendJSONResponse(connection: connection, json: result)
+        }
+    }
+
+    // MARK: - REST POST Handler
+
+    private func handleRESTPost(path: String, bodyData: Data, connection: NWConnection) {
+        guard let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid JSON body")
+            return
+        }
+
+        let result: [String: Any] = DispatchQueue.main.sync {
+            let store = DataStore.shared
+
+            // POST /api/agents/{id}/send
+
+            if path.hasPrefix("/api/agents/") && path.hasSuffix("/send") {
+                let agentId = String(path.dropFirst("/api/agents/".count).dropLast("/send".count))
+                guard let message = json["message"] as? String, !message.isEmpty else {
+                    return ["error": "message is required"]
+                }
+                guard let projectId = json["projectId"] as? String else {
+                    return ["error": "projectId is required"]
+                }
+
+                // Find the agent
+
+                let agent = store.agents.first { $0.id == agentId }
+                guard let agent = agent else {
+                    return ["error": "Agent not found"]
+                }
+
+                // Add user message to DB
+
+                store.addMessage(role: "user", text: message, persona: "agent", toAgentId: agentId)
+
+                // Send to tmux session
+
+                let sessionId: String
+                if agent.isDefault {
+                    sessionId = ClaudeCodeManager.agentSessionId(projectId: projectId)
+                } else {
+                    sessionId = ClaudeCodeManager.agentSessionId(projectId: projectId, agentId: agentId)
+                }
+
+                if let session = ClaudeCodeManager.shared.sessions[sessionId] {
+                    session.sendLine(message)
+                    self.typingIndicators[sessionId] = true
+                }
+
+                return ["success": true] as [String: Any]
+            }
+
+            return ["error": "Not found"]
+        }
+
+        if let error = result["error"] as? String {
+            sendErrorResponse(connection: connection, statusCode: 400, message: error)
+        } else {
+            sendJSONResponse(connection: connection, json: result)
+        }
+    }
+
     // MARK: - Persona & Artifact Discovery
 
     private func getPersonaInfo(_ persona: String) -> [String: Any] {

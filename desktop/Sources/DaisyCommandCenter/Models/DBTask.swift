@@ -1,6 +1,8 @@
 import Foundation
 import GRDB
 
+// MARK: - Agent (stored in "task" table for DB compatibility)
+
 struct DBTask: Codable, FetchableRecord, PersistableRecord, Identifiable {
     static let databaseTableName = "task"
 
@@ -14,8 +16,6 @@ struct DBTask: Codable, FetchableRecord, PersistableRecord, Identifiable {
     var createdAt: Date
     var startedAt: Date?
     var completedAt: Date?
-
-    // Agent alias: isDefault = isProjectManager (the default agent)
 
     var isDefault: Bool { isProjectManager }
 
@@ -31,12 +31,8 @@ struct DBTask: Codable, FetchableRecord, PersistableRecord, Identifiable {
     }
 
     static let project = belongsTo(DBProject.self)
-    static let criteria = hasMany(DBCriterion.self)
     static let messages = hasMany(DBMessage.self)
-    static let logs = hasMany(DBTaskLog.self)
     static let artifacts = hasMany(DBArtifact.self)
 }
-
-// Type alias: Agents are stored in the task table
 
 typealias DBAgent = DBTask

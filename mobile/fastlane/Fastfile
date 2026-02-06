@@ -1,0 +1,158 @@
+# -------------------------------------------------------------------------------------
+# ----------------------------------- Fastfile ----------------------------------------
+# -------------------------------------------------------------------------------------
+#
+# Lanes:
+#   test    — Run unit tests on iOS Simulator
+#   beta    — Build, sign, and upload to TestFlight
+#   release — Placeholder for App Store submission
+#
+# Usage:
+#   bundle exec fastlane test
+#   bundle exec fastlane beta
+#   bundle exec fastlane release
+
+default_platform(:ios)
+
+# -------------------------------------------------------------------------------------
+# ------------------------------------ Config -----------------------------------------
+# -------------------------------------------------------------------------------------
+
+PROJECT      = "DaisyMobileCompanion.xcodeproj"
+SCHEME       = "DaisyMobileCompanion"
+TEST_SCHEME  = "DaisyMobileCompanionTests"
+BUNDLE_ID    = "com.daisy.mobile"
+OUTPUT_DIR   = "build"
+
+platform :ios do
+
+  before_all do
+    setup_ci if ENV["CI"]
+  end
+
+  # -----------------------------------------------------------------------------------
+  # ------------------------------------- Test ----------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  desc "Run unit tests"
+  lane :test do
+    run_tests(
+      project: PROJECT,
+      scheme: TEST_SCHEME,
+      device: "iPhone 16",
+      code_coverage: true,
+      output_directory: OUTPUT_DIR,
+      output_types: "junit",
+      clean: true
+    )
+  end
+
+  # -----------------------------------------------------------------------------------
+  # ------------------------------------- Beta ----------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  desc "Build and upload to TestFlight"
+  lane :beta do
+
+    # Fetch signing certificates and profiles via match
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_PATH"],
+      duration: 1200,
+      in_house: false
+    )
+
+    match(
+      type: "appstore",
+      app_identifier: BUNDLE_ID,
+      api_key: api_key,
+      readonly: is_ci
+    )
+
+    # Set version and build number
+
+    version = ENV["VERSION_NUMBER"] || get_version_number(xcodeproj: PROJECT, target: SCHEME)
+    build   = ENV["BUILD_NUMBER"]   || number_of_commits.to_s
+
+    increment_version_number(
+      version_number: version,
+      xcodeproj: PROJECT
+    )
+
+    increment_build_number(
+      build_number: build,
+      xcodeproj: PROJECT
+    )
+
+    # Build the archive
+
+    build_app(
+      project: PROJECT,
+      scheme: SCHEME,
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: OUTPUT_DIR,
+      output_name: "DaisyMobileCompanion.ipa",
+      include_bitcode: false,
+      include_symbols: true,
+      export_options: {
+        provisioningProfiles: {
+          BUNDLE_ID => "match AppStore #{BUNDLE_ID}"
+        }
+      }
+    )
+
+    # Upload to TestFlight
+
+    changelog = ENV["TESTFLIGHT_CHANGELOG"] || "New build"
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: "#{OUTPUT_DIR}/DaisyMobileCompanion.ipa",
+      changelog: changelog,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+
+    # Upload dSYMs to any crash reporting service here
+    # upload_symbols_to_crashlytics(dsym_path: "#{OUTPUT_DIR}/DaisyMobileCompanion.app.dSYM.zip")
+
+    UI.success "✓ Build #{version} (#{build}) uploaded to TestFlight"
+  end
+
+  # -----------------------------------------------------------------------------------
+  # ----------------------------------- Release ---------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  desc "Submit to App Store review"
+  lane :release do
+    UI.user_error!("Release lane is not yet configured. Use 'beta' for TestFlight builds.")
+
+    # When ready, this lane would:
+    # 1. Run tests
+    # 2. Build with match (appstore profile)
+    # 3. Upload to App Store Connect
+    # 4. Submit for review with metadata
+
+    # deliver(
+    #   submit_for_review: true,
+    #   force: true,
+    #   metadata_path: "fastlane/metadata",
+    #   screenshots_path: "fastlane/screenshots"
+    # )
+  end
+
+  # -----------------------------------------------------------------------------------
+  # ----------------------------------- Helpers ---------------------------------------
+  # -----------------------------------------------------------------------------------
+
+  after_all do |lane|
+    UI.success "✓ Lane '#{lane}' completed"
+  end
+
+  error do |lane, exception|
+    UI.error "✗ Lane '#{lane}' failed: #{exception.message}"
+  end
+end

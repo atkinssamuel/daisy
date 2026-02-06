@@ -10,16 +10,29 @@ final class DaisyMobileCompanionTests: XCTestCase {
         XCTAssertFalse(project.id.isEmpty)
     }
 
-    func testTaskInit() {
-        let task = ProjectTask(projectId: "p1", title: "Test Task")
-        XCTAssertEqual(task.title, "Test Task")
-        XCTAssertEqual(task.status, "inactive")
-        XCTAssertFalse(task.isFinished)
+    func testAgentInit() {
+        let agent = Agent(projectId: "p1", title: "Test Agent")
+        XCTAssertEqual(agent.title, "Test Agent")
+        XCTAssertEqual(agent.status, "inactive")
+        XCTAssertFalse(agent.isFinished)
+        XCTAssertFalse(agent.isDefault)
     }
 
     func testCriterionInit() {
         let criterion = Criterion(taskId: "t1", text: "Must pass tests")
         XCTAssertEqual(criterion.text, "Must pass tests")
-        XCTAssertFalse(criterion.isVerified)
+        XCTAssertFalse(criterion.isValidated)
+    }
+
+    func testMessageInit() {
+        let message = Message(agentId: "a1", role: "user", text: "Hello")
+        XCTAssertEqual(message.text, "Hello")
+        XCTAssertTrue(message.isUser)
+        XCTAssertFalse(message.isAgent)
+    }
+
+    func testAppConfig() {
+        XCTAssertFalse(AppConfig.serverAddress.isEmpty)
+        XCTAssertTrue(AppConfig.baseURL.hasPrefix("http://"))
     }
 }

@@ -1,0 +1,13 @@
+# -------------------------------------------------------------------------------------
+# ----------------------------------- Matchfile ---------------------------------------
+# -------------------------------------------------------------------------------------
+#
+# Match manages iOS code signing certificates and provisioning profiles
+# via a private Git repository. Run `fastlane match init` to set up.
+
+git_url       ENV["MATCH_GIT_URL"]
+storage_mode  "git"
+type          "appstore"
+app_identifier ["com.daisy.mobile"]
+username      ENV["FASTLANE_APPLE_ID"]
+team_id       ENV["FASTLANE_TEAM_ID"]

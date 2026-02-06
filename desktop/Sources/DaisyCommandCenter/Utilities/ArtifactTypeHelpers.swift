@@ -23,21 +23,6 @@ struct ArtifactTypeHelper {
     }
 }
 
-struct TaskStatusHelper {
-    static func color(for task: DBTask) -> Color {
-        if task.isFinished { return .green }
-        switch task.status {
-        case "running": return .yellow
-        case "paused": return .orange
-        default: return .blue
-        }
-    }
-
-    static func statusText(for task: DBTask) -> String {
-        if task.isFinished { return "Finished" }
-        return task.status.capitalized
-    }
-}
 
 struct PersonaHelper {
     enum PersonaType {

@@ -1,15 +1,17 @@
 import Foundation
 
-// MARK: - App Configuration
-
 struct AppConfig {
 
-    // MARK: - API Configuration
+    // Server address stored in UserDefaults
 
-    static let apiBaseURL = ProcessInfo.processInfo.environment["DAISY_API_URL"]
-        ?? "http://127.0.0.1:9999"
+    static var serverAddress: String {
+        get { UserDefaults.standard.string(forKey: "serverAddress") ?? "127.0.0.1:9999" }
+        set { UserDefaults.standard.set(newValue, forKey: "serverAddress") }
+    }
 
-    // MARK: - Feature Flags
+    static var baseURL: String {
+        "http://\(serverAddress)"
+    }
 
-    static let enableDebugLogging = ProcessInfo.processInfo.environment["DAISY_DEBUG"] == "1"
+    static let pollingInterval: TimeInterval = 2.0
 }
